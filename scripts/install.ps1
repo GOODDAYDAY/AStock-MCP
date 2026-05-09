@@ -61,10 +61,10 @@ while ([string]::IsNullOrWhiteSpace($apiKey)) {
 $model = Read-Host "请输入模型名称 (直接回车默认 claude-sonnet-4-6)"
 if ([string]::IsNullOrWhiteSpace($model)) { $model = "claude-sonnet-4-6" }
 
-# ── 5. 注册 MCP Server（用 Python 处理 JSON，避免 PS5.1 兼容问题）──
+# ── 5. 注册 MCP Server（写临时 Python 脚本执行，避免 PS 语法冲突）──
 Write-Host "[*] 注册 MCP Server..." -ForegroundColor Yellow
 
-python -c @"
+$scriptBlock = @'
 import json, os
 path = os.path.join(os.environ['USERPROFILE'], '.claude.json')
 cfg = {}
@@ -81,13 +81,22 @@ cfg['mcpServers']['a-stock-mcp'] = {
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
 print('OK')
-"@
+'@
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[!] MCP 注册失败" -ForegroundColor Red
-    exit 1
+# 把 API Key 注入到脚本中
+$scriptBlock = $scriptBlock.Replace('$apiKey', $apiKey)
+
+$tmpFile = [IO.Path]::GetTempFileName() + ".py"
+try {
+    $scriptBlock | Out-File $tmpFile -Encoding UTF8
+    python $tmpFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python 脚本执行失败"
+    }
+    Write-Host "[OK] MCP Server 已注册" -ForegroundColor Green
+} finally {
+    if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
 }
-Write-Host "[OK] MCP Server 已注册" -ForegroundColor Green
 
 # ── 6. 创建启动脚本 ──
 $launcherPath = [IO.Path]::Combine($ProjectDir, "start.bat")
