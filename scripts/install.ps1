@@ -61,36 +61,32 @@ while ([string]::IsNullOrWhiteSpace($apiKey)) {
 $model = Read-Host "请输入模型名称 (直接回车默认 claude-sonnet-4-6)"
 if ([string]::IsNullOrWhiteSpace($model)) { $model = "claude-sonnet-4-6" }
 
-# ── 5. 注册 MCP Server ──
+# ── 5. 注册 MCP Server（用 Python 处理 JSON，避免 PS5.1 兼容问题）──
 Write-Host "[*] 注册 MCP Server..." -ForegroundColor Yellow
 
-$claudeConfigPath = [IO.Path]::Combine($env:USERPROFILE, ".claude.json")
-$claudeConfig = @{}
-if (Test-Path $claudeConfigPath) {
-    try {
-        $claudeConfig = Get-Content $claudeConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
-    } catch {
-        $claudeConfig = @{}
-    }
+python -c @"
+import json, os
+path = os.path.join(os.environ['USERPROFILE'], '.claude.json')
+cfg = {}
+if os.path.exists(path):
+    with open(path, encoding='utf-8') as f:
+        cfg = json.load(f)
+cfg.setdefault('mcpServers', {})
+cfg['mcpServers']['a-stock-mcp'] = {
+    'type': 'stdio',
+    'command': 'python',
+    'args': ['-m', 'a_stock_mcp'],
+    'env': {'ANTHROPIC_API_KEY': '$apiKey'}
 }
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+print('OK')
+"@
 
-# 确保 mcpServers 存在
-if (-not $claudeConfig.ContainsKey("mcpServers")) {
-    $claudeConfig["mcpServers"] = @{}
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[!] MCP 注册失败" -ForegroundColor Red
+    exit 1
 }
-
-# 注册 a-stock-mcp
-$claudeConfig["mcpServers"]["a-stock-mcp"] = @{
-    type = "stdio"
-    command = "python"
-    args = @("-m", "a_stock_mcp")
-    env = @{
-        ANTHROPIC_API_KEY = $apiKey
-    }
-}
-
-# 保存（ConvertTo-Json 在 PS5.1 默认深度不够，需要指定 -Depth）
-$claudeConfig | ConvertTo-Json -Depth 10 | Out-File $claudeConfigPath -Encoding UTF8
 Write-Host "[OK] MCP Server 已注册" -ForegroundColor Green
 
 # ── 6. 创建启动脚本 ──
@@ -98,9 +94,10 @@ $launcherPath = [IO.Path]::Combine($ProjectDir, "start.bat")
 @"
 @echo off
 chcp 65001 >nul
-set ANTHROPIC_API_KEY=%ANTHROPIC_API_KEY%
 cd /d "$ProjectDir"
-start claude --model %model% --project "%ProjectDir%"
+echo 启动 Claude Code（已集成 AStock-MCP）...
+claude --model $model --project "$ProjectDir"
+pause
 "@ | Out-File $launcherPath -Encoding UTF8
 
 # 也创建一个带有凭据的快捷启动
@@ -108,9 +105,11 @@ $launcherWithKeyPath = [IO.Path]::Combine($ProjectDir, "start-with-key.bat")
 @"
 @echo off
 chcp 65001 >nul
-set ANTHROPIC_API_KEY=$apiKey
 cd /d "$ProjectDir"
-claude --model $model --project "%ProjectDir%"
+set ANTHROPIC_API_KEY=$apiKey
+echo 启动 Claude Code（已集成 AStock-MCP）...
+claude --model $model --project "$ProjectDir"
+pause
 "@ | Out-File $launcherWithKeyPath -Encoding UTF8
 
 Write-Host ""
