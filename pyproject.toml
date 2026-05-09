@@ -1,0 +1,13 @@
+[project]
+name = "a-stock-mcp"
+version = "0.1.0"
+description = "A股股票数据 MCP Server - 基于 AKShare 的实时行情/技术分析/基本面查询"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "akshare>=1.15.0",
+    "pandas>=2.0.0",
+]
+
+[project.scripts]
+a-stock-mcp = "a_stock_mcp:main"
