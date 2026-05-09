@@ -49,53 +49,16 @@ if [ -z "$model" ]; then
     model="claude-sonnet-4-6"
 fi
 
-# ── 5. 注册 MCP Server ──
-echo "[*] 注册 MCP Server..."
+# ── 5. 创建启动脚本（不修改 ~/.claude.json，用 --mcp-config 传入）──
+echo "[*] 创建启动脚本..."
 
-CLAUDE_CONFIG="$HOME/.claude.json"
+MCP_CFG="$PROJECT_DIR/mcp-config.json"
 
-# 读取或创建配置
-if [ -f "$CLAUDE_CONFIG" ]; then
-    # 使用临时 Python 脚本更新 JSON（避免 jq 依赖）
-    python3 -c "
-import json
-with open('$CLAUDE_CONFIG') as f:
-    cfg = json.load(f)
-if 'mcpServers' not in cfg:
-    cfg['mcpServers'] = {}
-cfg['mcpServers']['a-stock-mcp'] = {
-    'type': 'stdio',
-    'command': 'python3',
-    'args': ['-m', 'a_stock_mcp'],
-    'env': {'ANTHROPIC_API_KEY': '$api_key'}
-}
-with open('$CLAUDE_CONFIG', 'w') as f:
-    json.dump(cfg, f, indent=2)
-"
-else
-    cat > "$CLAUDE_CONFIG" <<JSONEOF
-{
-  "mcpServers": {
-    "a-stock-mcp": {
-      "type": "stdio",
-      "command": "python3",
-      "args": ["-m", "a_stock_mcp"],
-      "env": {
-        "ANTHROPIC_API_KEY": "$api_key"
-      }
-    }
-  }
-}
-JSONEOF
-fi
-echo "[OK] MCP Server 已注册"
-
-# ── 6. 创建启动脚本 ──
 cat > "$PROJECT_DIR/start.sh" <<SHEOF
 #!/usr/bin/env bash
-export ANTHROPIC_API_KEY="\$ANTHROPIC_API_KEY"
 cd "$PROJECT_DIR"
-claude --model $model --project "$PROJECT_DIR"
+echo "[AStock-MCP] 启动 Claude Code ..."
+claude --model $model --mcp-config "$MCP_CFG" --project "$PROJECT_DIR"
 SHEOF
 chmod +x "$PROJECT_DIR/start.sh"
 
@@ -103,7 +66,8 @@ cat > "$PROJECT_DIR/start-with-key.sh" <<SHEOF
 #!/usr/bin/env bash
 export ANTHROPIC_API_KEY="$api_key"
 cd "$PROJECT_DIR"
-claude --model $model --project "$PROJECT_DIR"
+echo "[AStock-MCP] 启动 Claude Code ..."
+claude --model $model --mcp-config "$MCP_CFG" --project "$PROJECT_DIR"
 SHEOF
 chmod +x "$PROJECT_DIR/start-with-key.sh"
 

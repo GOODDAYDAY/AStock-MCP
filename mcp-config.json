@@ -1,0 +1,7 @@
+{
+    "a-stock-mcp": {
+        "type": "stdio",
+        "command": "python",
+        "args": ["-m", "a_stock_mcp"]
+    }
+}
