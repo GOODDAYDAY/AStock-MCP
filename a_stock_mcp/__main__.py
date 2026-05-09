@@ -19,6 +19,7 @@ from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 
 from . import storage
 from .analysis import run_analysis
+from .portfolio import parse_portfolio, resolve_symbol
 from .scheduler import start_monitoring, stop_monitoring, get_monitoring_status
 
 logger = logging.getLogger("a-stock-mcp")
@@ -230,6 +231,28 @@ TOOLS = [
     Tool(
         name="monitoring_status",
         description="查看当前正在监控的所有股票及状态",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
+    Tool(
+        name="set_portfolio",
+        description="设置/更新持仓信息。接受自然语言或结构化文本，例如：茅台100股成本1500，宁德200股成本420，或 JSON 数组",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "持仓描述文本或 JSON",
+                },
+            },
+            "required": ["text"],
+        },
+    ),
+    Tool(
+        name="portfolio_analysis",
+        description="分析当前持仓所有股票，返回综合评分、盈亏、技术信号",
         inputSchema={
             "type": "object",
             "properties": {},
@@ -575,6 +598,107 @@ async def handle_call_tool(name: str, arguments: dict[str, Any] | None) -> list[
                 updated = i.get("last_update", "N/A")
                 lines.append(f"  {i['symbol']} ({i.get('name', '')})")
                 lines.append(f"    间隔: {i['interval_min']}分钟 | 最新价: {last} | 更新: {updated}")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "set_portfolio":
+            text = arguments["text"]
+            positions = parse_portfolio(text)
+            if not positions:
+                return [TextContent(type="text", text="未能解析持仓信息，请提供格式如：600519 100 1500 或 茅台100股成本1500")]
+            # Resolve names to symbols
+            for p in positions:
+                resolve_symbol(p)
+            storage.portfolio_set(positions)
+            lines = [
+                f"持仓已保存 ({len(positions)} 只)：",
+            ]
+            for p in positions:
+                sym = p.get("symbol", "?")
+                name = p.get("name", "")
+                lines.append(f"  {sym} {name} | {p['shares']:.0f}股 | 成本 {p['cost']:.2f}")
+            lines.append("")
+            lines.append("可用 portfolio_analysis 分析持仓")
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "portfolio_analysis":
+            positions = storage.portfolio_get()
+            if not positions:
+                return [TextContent(type="text", text="暂无持仓数据。请先用 set_portfolio 输入你的持仓。")]
+            spot = _get_all_spots()
+
+            lines = ["═══ 持仓分析报告 ═══", ""]
+            total_cost = 0.0
+            total_value = 0.0
+            overall_score = 0.0
+
+            for i, pos in enumerate(positions, 1):
+                sym = pos["symbol"].strip().upper()
+                name = pos.get("name", "")
+                shares = pos["shares"]
+                cost = pos["cost"]
+                item_cost = cost * shares
+                total_cost += item_cost
+
+                lines.append(f"── {i}. {sym} {name} ──")
+                lines.append(f"   持仓: {shares:.0f}股 | 成本价: {cost:.2f}")
+
+                # Get realtime price from spot
+                row = spot[spot["代码"] == sym]
+                if row.empty:
+                    lines.append("   ⚠ 未找到实时数据")
+                    lines.append("")
+                    continue
+                s = row.iloc[0]
+                price = float(s.get("最新价", 0))
+                change_pct = float(s.get("涨跌幅", 0))
+                item_value = price * shares
+                total_value += item_value
+                profit = item_value - item_cost
+                profit_pct = (price / cost - 1) * 100
+
+                lines.append(f"   现价: {price:.2f} ({change_pct:+.2f}%)")
+                pct_icon = "▲" if profit >= 0 else "▼"
+                lines.append(f"   盈亏: {pct_icon} {profit:+.2f} ({profit_pct:+.2f}%)")
+
+                # Run analysis
+                try:
+                    raw_code = sym.replace("SH", "").replace("SZ", "").replace("BJ", "")
+                    prefix = "sh" if raw_code.startswith("6") else "sz"
+                    df = ak.stock_zh_a_daily(symbol=f"{prefix}{raw_code}", adjust="qfq")
+                    if not df.empty:
+                        df = df.rename(columns={
+                            "date": "日期", "open": "开盘", "high": "最高",
+                            "low": "最低", "close": "收盘", "volume": "成交量",
+                            "amount": "成交额",
+                        })
+                        closes = df["收盘"].values.astype(float).tolist()
+                        highs = df["最高"].values.astype(float).tolist()
+                        lows = df["最低"].values.astype(float).tolist()
+                        volumes = df["成交量"].values.astype(float).tolist()
+                        ra = run_analysis(sym, price, closes, highs, lows, volumes)
+                        overall_score += ra["score"]
+                        lines.append(f"   技术评分: {ra['score']}/100 ({ra['verdict']})")
+                        lines.append(f"   看多/看空: {ra['bullish_count']}/{ra['bearish_count']}")
+                        lines.append(f"   RSI: {ra.get('rsi', 'N/A')} | MACD: {ra.get('macd', 'N/A')}")
+                    else:
+                        lines.append("   技术分析: 数据不足")
+                except Exception as e:
+                    lines.append(f"   技术分析失败: {e}")
+                lines.append("")
+
+            # Summary
+            portfolio_profit = total_value - total_cost
+            portfolio_pct = (total_value / total_cost - 1) * 100 if total_cost else 0
+            avg_score = overall_score / len(positions) if positions else 0
+
+            lines.append("═══ 组合总览 ═══")
+            lines.append(f"总市值: {total_value:,.2f}")
+            lines.append(f"总成本: {total_cost:,.2f}")
+            profit_icon = "▲" if portfolio_profit >= 0 else "▼"
+            lines.append(f"总盈亏: {profit_icon} {portfolio_profit:+,.2f} ({portfolio_pct:+.2f}%)")
+            q_icon = "🟢" if avg_score >= 10 else ("🔴" if avg_score <= -10 else "🟡")
+            lines.append(f"平均技术评分: {avg_score:.1f}/100 {q_icon}")
+
             return [TextContent(type="text", text="\n".join(lines))]
 
         else:

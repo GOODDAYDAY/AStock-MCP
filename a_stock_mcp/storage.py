@@ -58,6 +58,20 @@ def init_db():
                 result TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
+
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                name TEXT DEFAULT '',
+                shares REAL NOT NULL,
+                cost REAL NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+
+            CREATE TABLE IF NOT EXISTS stock_name_index (
+                name TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL
+            );
         """)
 
 
@@ -159,3 +173,46 @@ def get_cached_analysis(symbol: str) -> dict[str, Any] | None:
         if row:
             return json.loads(row["result"])
         return None
+
+
+# ── Portfolio / Positions ────────────────────────────────────
+
+def portfolio_set(positions: list[dict[str, Any]]):
+    """Replace all positions with a new list (clear + insert)."""
+    with _get_db() as conn:
+        conn.execute("DELETE FROM portfolio")
+        for p in positions:
+            conn.execute(
+                "INSERT INTO portfolio (symbol, name, shares, cost) VALUES (?, ?, ?, ?)",
+                (p.get("symbol", ""), p.get("name", ""), p.get("shares", 0), p.get("cost", 0)),
+            )
+
+
+def portfolio_get() -> list[dict[str, Any]]:
+    """Return all stored positions."""
+    with _get_db() as conn:
+        rows = conn.execute("SELECT * FROM portfolio ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+
+def portfolio_clear():
+    """Delete all positions."""
+    with _get_db() as conn:
+        conn.execute("DELETE FROM portfolio")
+
+
+def get_cached_stock_by_name(name: str) -> dict[str, str] | None:
+    """Look up symbol by stock name in cache."""
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM stock_name_index WHERE name = ?", (name,)
+        ).fetchone()
+        return {"name": row["name"], "symbol": row["symbol"]} if row else None
+
+
+def cache_stock_name(name: str, symbol: str):
+    with _get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO stock_name_index (name, symbol) VALUES (?, ?)",
+            (name, symbol),
+        )
